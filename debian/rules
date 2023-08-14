@@ -2,7 +2,7 @@
 
 # Do not include plan9 and windows packages that are not relevant to Debian. In
 # particular, the plan9 package makes build fail when using gccgo.
-export DH_GOLANG_EXCLUDES := plan9 windows
+export DH_GOLANG_EXCLUDES := plan9 windows unix/internal/mkmerge
 
 %:
-	dh $@ --buildsystem=golang --with=golang
+	dh $@ --builddirectory=_build --buildsystem=golang

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build windows
 // +build windows
 
 // Example service program that beeps.
@@ -11,7 +12,6 @@
 // stop / start / pause / continue any service, and how to
 // write to event log. It also shows how to use debug
 // facilities available in debug package.
-//
 package main
 
 import (
