@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: sys
 Source: https://github.com/golang/sys
+Upstream-Name: sys
 
 Files: *
 Copyright: 2009 The Go Authors

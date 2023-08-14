@@ -256,3 +256,39 @@ func TestGetsockoptXucred(t *testing.T) {
 		}
 	}
 }
+
+func TestSysctlKinfoProc(t *testing.T) {
+	pid := unix.Getpid()
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		t.Fatalf("SysctlKinfoProc: %v", err)
+	}
+	if got, want := int(kp.Proc.P_pid), pid; got != want {
+		t.Errorf("got pid %d, want %d", got, want)
+	}
+}
+
+func TestSysctlKinfoProcSlice(t *testing.T) {
+	kps, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	if err != nil {
+		t.Fatalf("SysctlKinfoProc: %v", err)
+	}
+	if len(kps) == 0 {
+		t.Errorf("SysctlKinfoProcSlice: expected at least one process")
+	}
+
+	uid := unix.Getuid()
+	kps, err = unix.SysctlKinfoProcSlice("kern.proc.uid", uid)
+	if err != nil {
+		t.Fatalf("SysctlKinfoProc: %v", err)
+	}
+	if len(kps) == 0 {
+		t.Errorf("SysctlKinfoProcSlice: expected at least one process")
+	}
+
+	for _, kp := range kps {
+		if got, want := int(kp.Eproc.Ucred.Uid), uid; got != want {
+			t.Errorf("process %d: got uid %d, want %d", kp.Proc.P_pid, got, want)
+		}
+	}
+}

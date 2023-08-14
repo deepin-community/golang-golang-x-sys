@@ -5,6 +5,7 @@
 package windows_test
 
 import (
+	"bufio"
 	"bytes"
 	"debug/pe"
 	"errors"
@@ -18,8 +19,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 
+	"golang.org/x/sys/internal/unsafeheader"
 	"golang.org/x/sys/windows"
 )
 
@@ -623,17 +626,29 @@ func TestCommandLineRecomposition(t *testing.T) {
 			continue
 		}
 	}
+
+	// check that windows.DecomposeCommandLine returns error for strings with NUL
+	testsWithNUL := []string{
+		"\x00abcd",
+		"ab\x00cd",
+		"abcd\x00",
+		"\x00abcd\x00",
+		"\x00ab\x00cd\x00",
+		"\x00\x00\x00",
+	}
+	for _, test := range testsWithNUL {
+		_, err := windows.DecomposeCommandLine(test)
+		if err == nil {
+			t.Errorf("Failed to return error while decomposing %#q string with NUL inside", test)
+		}
+	}
 }
 
 func TestWinVerifyTrust(t *testing.T) {
-	system32, err := windows.GetSystemDirectory()
+	evsignedfile := `.\testdata\ev-signed-file.exe`
+	evsignedfile16, err := windows.UTF16PtrFromString(evsignedfile)
 	if err != nil {
-		t.Errorf("unable to find system32 directory: %v", err)
-	}
-	ntoskrnl := filepath.Join(system32, "ntoskrnl.exe")
-	ntoskrnl16, err := windows.UTF16PtrFromString(ntoskrnl)
-	if err != nil {
-		t.Fatalf("unable to get utf16 of ntoskrnl.exe: %v", err)
+		t.Fatalf("unable to get utf16 of %s: %v", evsignedfile, err)
 	}
 	data := &windows.WinTrustData{
 		Size:             uint32(unsafe.Sizeof(windows.WinTrustData{})),
@@ -643,39 +658,39 @@ func TestWinVerifyTrust(t *testing.T) {
 		StateAction:      windows.WTD_STATEACTION_VERIFY,
 		FileOrCatalogOrBlobOrSgnrOrCert: unsafe.Pointer(&windows.WinTrustFileInfo{
 			Size:     uint32(unsafe.Sizeof(windows.WinTrustFileInfo{})),
-			FilePath: ntoskrnl16,
+			FilePath: evsignedfile16,
 		}),
 	}
 	verifyErr := windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, data)
 	data.StateAction = windows.WTD_STATEACTION_CLOSE
 	closeErr := windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, data)
 	if verifyErr != nil {
-		t.Errorf("ntoskrnl.exe did not verify: %v", verifyErr)
+		t.Errorf("%s did not verify: %v", evsignedfile, verifyErr)
 	}
 	if closeErr != nil {
 		t.Errorf("unable to free verification resources: %v", closeErr)
 	}
 
-	// Now that we've verified legitimate ntoskrnl.exe verifies, let's corrupt it and see if it correctly fails.
+	// Now that we've verified the legitimate file verifies, let's corrupt it and see if it correctly fails.
 
 	dir, err := ioutil.TempDir("", "go-build")
 	if err != nil {
 		t.Fatalf("failed to create temp directory: %v", err)
 	}
 	defer os.RemoveAll(dir)
-	corruptedNtoskrnl := filepath.Join(dir, "ntoskrnl.exe")
-	ntoskrnlBytes, err := ioutil.ReadFile(ntoskrnl)
+	corruptedEvsignedfile := filepath.Join(dir, "corrupted-file")
+	evsignedfileBytes, err := ioutil.ReadFile(evsignedfile)
 	if err != nil {
-		t.Fatalf("unable to read ntoskrnl.exe bytes: %v", err)
+		t.Fatalf("unable to read %s bytes: %v", evsignedfile, err)
 	}
-	if len(ntoskrnlBytes) > 0 {
-		ntoskrnlBytes[len(ntoskrnlBytes)/2-1]++
+	if len(evsignedfileBytes) > 0 {
+		evsignedfileBytes[len(evsignedfileBytes)/2-1]++
 	}
-	err = ioutil.WriteFile(corruptedNtoskrnl, ntoskrnlBytes, 0755)
+	err = ioutil.WriteFile(corruptedEvsignedfile, evsignedfileBytes, 0755)
 	if err != nil {
 		t.Fatalf("unable to write corrupted ntoskrnl.exe bytes: %v", err)
 	}
-	ntoskrnl16, err = windows.UTF16PtrFromString(corruptedNtoskrnl)
+	evsignedfile16, err = windows.UTF16PtrFromString(corruptedEvsignedfile)
 	if err != nil {
 		t.Fatalf("unable to get utf16 of ntoskrnl.exe: %v", err)
 	}
@@ -687,17 +702,444 @@ func TestWinVerifyTrust(t *testing.T) {
 		StateAction:      windows.WTD_STATEACTION_VERIFY,
 		FileOrCatalogOrBlobOrSgnrOrCert: unsafe.Pointer(&windows.WinTrustFileInfo{
 			Size:     uint32(unsafe.Sizeof(windows.WinTrustFileInfo{})),
-			FilePath: ntoskrnl16,
+			FilePath: evsignedfile16,
 		}),
 	}
 	verifyErr = windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, data)
 	data.StateAction = windows.WTD_STATEACTION_CLOSE
 	closeErr = windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, data)
 	if verifyErr != windows.Errno(windows.TRUST_E_BAD_DIGEST) {
-		t.Errorf("ntoskrnl.exe did not fail to verify as expected: %v", verifyErr)
+		t.Errorf("%s did not fail to verify as expected: %v", corruptedEvsignedfile, verifyErr)
 	}
 	if closeErr != nil {
 		t.Errorf("unable to free verification resources: %v", closeErr)
 	}
 
+}
+
+func TestProcessModules(t *testing.T) {
+	process, err := windows.GetCurrentProcess()
+	if err != nil {
+		t.Fatalf("unable to get current process: %v", err)
+	}
+	// NB: Assume that we're always the first module. This technically isn't documented anywhere (that I could find), but seems to always hold.
+	var module windows.Handle
+	var cbNeeded uint32
+	err = windows.EnumProcessModules(process, &module, uint32(unsafe.Sizeof(module)), &cbNeeded)
+	if err != nil {
+		t.Fatalf("EnumProcessModules failed: %v", err)
+	}
+
+	var moduleEx windows.Handle
+	err = windows.EnumProcessModulesEx(process, &moduleEx, uint32(unsafe.Sizeof(moduleEx)), &cbNeeded, windows.LIST_MODULES_DEFAULT)
+	if err != nil {
+		t.Fatalf("EnumProcessModulesEx failed: %v", err)
+	}
+	if module != moduleEx {
+		t.Fatalf("module from EnumProcessModules does not match EnumProcessModulesEx: %v != %v", module, moduleEx)
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("unable to get current executable path: %v", err)
+	}
+
+	modulePathUTF16 := make([]uint16, len(exePath)+1)
+	err = windows.GetModuleFileNameEx(process, module, &modulePathUTF16[0], uint32(len(modulePathUTF16)))
+	if err != nil {
+		t.Fatalf("GetModuleFileNameEx failed: %v", err)
+	}
+
+	modulePath := windows.UTF16ToString(modulePathUTF16)
+	if modulePath != exePath {
+		t.Fatalf("module does not match executable for GetModuleFileNameEx: %s != %s", modulePath, exePath)
+	}
+
+	err = windows.GetModuleBaseName(process, module, &modulePathUTF16[0], uint32(len(modulePathUTF16)))
+	if err != nil {
+		t.Fatalf("GetModuleBaseName failed: %v", err)
+	}
+
+	modulePath = windows.UTF16ToString(modulePathUTF16)
+	baseExePath := filepath.Base(exePath)
+	if modulePath != baseExePath {
+		t.Fatalf("module does not match executable for GetModuleBaseName: %s != %s", modulePath, baseExePath)
+	}
+
+	var moduleInfo windows.ModuleInfo
+	err = windows.GetModuleInformation(process, module, &moduleInfo, uint32(unsafe.Sizeof(moduleInfo)))
+	if err != nil {
+		t.Fatalf("GetModuleInformation failed: %v", err)
+	}
+
+	peFile, err := pe.Open(exePath)
+	if err != nil {
+		t.Fatalf("unable to open current executable: %v", err)
+	}
+	defer peFile.Close()
+
+	var peSizeOfImage uint32
+	switch runtime.GOARCH {
+	case "amd64", "arm64":
+		peSizeOfImage = peFile.OptionalHeader.(*pe.OptionalHeader64).SizeOfImage
+	case "386", "arm":
+		peSizeOfImage = peFile.OptionalHeader.(*pe.OptionalHeader32).SizeOfImage
+	default:
+		t.Fatalf("unable to test GetModuleInformation on arch %v", runtime.GOARCH)
+	}
+
+	if moduleInfo.SizeOfImage != peSizeOfImage {
+		t.Fatalf("module size does not match executable: %v != %v", moduleInfo.SizeOfImage, peSizeOfImage)
+	}
+}
+
+func TestQueryWorkingSetEx(t *testing.T) {
+	var a int
+
+	process := windows.CurrentProcess()
+	information := windows.PSAPI_WORKING_SET_EX_INFORMATION{
+		VirtualAddress: windows.Pointer(unsafe.Pointer(&a)),
+	}
+	infos := []windows.PSAPI_WORKING_SET_EX_INFORMATION{information}
+
+	cb := uint32(uintptr(len(infos)) * unsafe.Sizeof(infos[0]))
+	if err := windows.QueryWorkingSetEx(process, uintptr(unsafe.Pointer(&infos[0])), cb); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	if !infos[0].VirtualAttributes.Valid() {
+		t.Errorf("memory location not valid")
+	}
+}
+
+func TestReadWriteProcessMemory(t *testing.T) {
+	testBuffer := []byte{0xBA, 0xAD, 0xF0, 0x0D}
+
+	process, err := windows.GetCurrentProcess()
+	if err != nil {
+		t.Fatalf("unable to get current process: %v", err)
+	}
+
+	buffer := make([]byte, len(testBuffer))
+	err = windows.ReadProcessMemory(process, uintptr(unsafe.Pointer(&testBuffer[0])), &buffer[0], uintptr(len(buffer)), nil)
+	if err != nil {
+		t.Errorf("ReadProcessMemory failed: %v", err)
+	}
+	if !bytes.Equal(testBuffer, buffer) {
+		t.Errorf("bytes read does not match buffer: 0x%X != 0x%X", testBuffer, buffer)
+	}
+
+	buffer = []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	err = windows.WriteProcessMemory(process, uintptr(unsafe.Pointer(&testBuffer[0])), &buffer[0], uintptr(len(buffer)), nil)
+	if err != nil {
+		t.Errorf("WriteProcessMemory failed: %v", err)
+	}
+	if !bytes.Equal(testBuffer, buffer) {
+		t.Errorf("bytes written does not match buffer: 0x%X != 0x%X", testBuffer, buffer)
+	}
+}
+
+func TestSystemModuleVersions(t *testing.T) {
+	var modules []windows.RTL_PROCESS_MODULE_INFORMATION
+	for bufferSize := uint32(128 * 1024); ; {
+		moduleBuffer := make([]byte, bufferSize)
+		err := windows.NtQuerySystemInformation(windows.SystemModuleInformation, unsafe.Pointer(&moduleBuffer[0]), bufferSize, &bufferSize)
+		switch err {
+		case windows.STATUS_INFO_LENGTH_MISMATCH:
+			continue
+		case nil:
+			break
+		default:
+			t.Error(err)
+			return
+		}
+		mods := (*windows.RTL_PROCESS_MODULES)(unsafe.Pointer(&moduleBuffer[0]))
+		hdr := (*unsafeheader.Slice)(unsafe.Pointer(&modules))
+		hdr.Data = unsafe.Pointer(&mods.Modules[0])
+		hdr.Len = int(mods.NumberOfModules)
+		hdr.Cap = int(mods.NumberOfModules)
+		break
+	}
+	for i := range modules {
+		moduleName := windows.ByteSliceToString(modules[i].FullPathName[modules[i].OffsetToFileName:])
+		driverPath := `\\?\GLOBALROOT` + windows.ByteSliceToString(modules[i].FullPathName[:])
+		var zero windows.Handle
+		infoSize, err := windows.GetFileVersionInfoSize(driverPath, &zero)
+		if err != nil {
+			if err != windows.ERROR_FILE_NOT_FOUND {
+				t.Error(err)
+			}
+			continue
+		}
+		versionInfo := make([]byte, infoSize)
+		err = windows.GetFileVersionInfo(driverPath, 0, infoSize, unsafe.Pointer(&versionInfo[0]))
+		if err != nil && err != windows.ERROR_FILE_NOT_FOUND {
+			t.Error(err)
+			continue
+		}
+		var fixedInfo *windows.VS_FIXEDFILEINFO
+		fixedInfoLen := uint32(unsafe.Sizeof(*fixedInfo))
+		err = windows.VerQueryValue(unsafe.Pointer(&versionInfo[0]), `\`, (unsafe.Pointer)(&fixedInfo), &fixedInfoLen)
+		if err != nil {
+			t.Error(err)
+			continue
+		}
+		t.Logf("%s: v%d.%d.%d.%d", moduleName,
+			(fixedInfo.FileVersionMS>>16)&0xff,
+			(fixedInfo.FileVersionMS>>0)&0xff,
+			(fixedInfo.FileVersionLS>>16)&0xff,
+			(fixedInfo.FileVersionLS>>0)&0xff)
+	}
+}
+
+type fileRenameInformation struct {
+	ReplaceIfExists uint32
+	RootDirectory   windows.Handle
+	FileNameLength  uint32
+	FileName        [1]uint16
+}
+
+func TestNtCreateFileAndNtSetInformationFile(t *testing.T) {
+	var iosb windows.IO_STATUS_BLOCK
+	var allocSize int64 = 0
+	// Open test directory with NtCreateFile.
+	testDirPath := t.TempDir()
+	objectName, err := windows.NewNTUnicodeString("\\??\\" + testDirPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oa := &windows.OBJECT_ATTRIBUTES{
+		ObjectName: objectName,
+	}
+	oa.Length = uint32(unsafe.Sizeof(*oa))
+	var testDirHandle windows.Handle
+	err = windows.NtCreateFile(&testDirHandle, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE, oa, &iosb,
+		&allocSize, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN,
+		windows.FILE_DIRECTORY_FILE, 0, 0)
+	if err != nil {
+		t.Fatalf("NtCreateFile(%v) failed: %v", testDirPath, err)
+	}
+	defer windows.CloseHandle(testDirHandle)
+	// Create a file in test directory with NtCreateFile.
+	fileName := "filename"
+	filePath := filepath.Join(testDirPath, fileName)
+	objectName, err = windows.NewNTUnicodeString(fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oa.RootDirectory = testDirHandle
+	oa.ObjectName = objectName
+	var fileHandle windows.Handle
+	err = windows.NtCreateFile(&fileHandle, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE, oa, &iosb,
+		&allocSize, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_CREATE,
+		0, 0, 0)
+	if err != nil {
+		t.Fatalf("NtCreateFile(%v) failed: %v", filePath, err)
+	}
+	defer windows.CloseHandle(fileHandle)
+	_, err = os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("cannot stat file created with NtCreatefile: %v", err)
+	}
+	// Rename file with NtSetInformationFile.
+	newName := "newname"
+	newPath := filepath.Join(testDirPath, newName)
+	newNameUTF16, err := windows.UTF16FromString(newName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileNameLen := len(newNameUTF16)*2 - 2
+	var dummyFileRenameInfo fileRenameInformation
+	bufferSize := int(unsafe.Offsetof(dummyFileRenameInfo.FileName)) + fileNameLen
+	buffer := make([]byte, bufferSize)
+	typedBufferPtr := (*fileRenameInformation)(unsafe.Pointer(&buffer[0]))
+	typedBufferPtr.ReplaceIfExists = windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS
+	typedBufferPtr.FileNameLength = uint32(fileNameLen)
+	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&typedBufferPtr.FileName[0]))[:fileNameLen/2:fileNameLen/2], newNameUTF16)
+	err = windows.NtSetInformationFile(fileHandle, &iosb, &buffer[0], uint32(bufferSize), windows.FileRenameInformation)
+	if err != nil {
+		t.Fatalf("NtSetInformationFile(%v) failed: %v", newPath, err)
+	}
+	_, err = os.Stat(newPath)
+	if err != nil {
+		t.Fatalf("cannot stat rename target %v: %v", newPath, err)
+	}
+}
+
+var deviceClassNetGUID = &windows.GUID{0x4d36e972, 0xe325, 0x11ce, [8]byte{0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18}}
+var deviceInterfaceNetGUID = &windows.GUID{0xcac88484, 0x7515, 0x4c03, [8]byte{0x82, 0xe6, 0x71, 0xa8, 0x7a, 0xba, 0xc3, 0x61}}
+
+func TestListLoadedNetworkDevices(t *testing.T) {
+	devInfo, err := windows.SetupDiGetClassDevsEx(deviceClassNetGUID, "", 0, windows.DIGCF_PRESENT, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devInfo.Close()
+	for i := 0; ; i++ {
+		devInfoData, err := devInfo.EnumDeviceInfo(i)
+		if err != nil {
+			if err == windows.ERROR_NO_MORE_ITEMS {
+				break
+			}
+			continue
+		}
+		friendlyName, err := devInfo.DeviceRegistryProperty(devInfoData, windows.SPDRP_DEVICEDESC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status, problemCode uint32
+		err = windows.CM_Get_DevNode_Status(&status, &problemCode, devInfoData.DevInst, 0)
+		if err != nil || (status&windows.DN_DRIVER_LOADED|windows.DN_STARTED) != windows.DN_DRIVER_LOADED|windows.DN_STARTED {
+			continue
+		}
+		instanceId, err := devInfo.DeviceInstanceID(devInfoData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		interfaces, err := windows.CM_Get_Device_Interface_List(instanceId, deviceInterfaceNetGUID, windows.CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
+		if err != nil || len(interfaces) == 0 {
+			continue
+		}
+		t.Logf("%s - %s", friendlyName, interfaces[0])
+	}
+}
+
+func TestListWireGuardDrivers(t *testing.T) {
+	devInfo, err := windows.SetupDiCreateDeviceInfoListEx(deviceClassNetGUID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devInfo.Close()
+	devInfoData, err := devInfo.CreateDeviceInfo("WireGuard", deviceClassNetGUID, "", 0, windows.DICD_GENERATE_ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = devInfo.SetDeviceRegistryProperty(devInfoData, windows.SPDRP_HARDWAREID, []byte("W\x00i\x00r\x00e\x00G\x00u\x00a\x00r\x00d\x00\x00\x00\x00\x00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = devInfo.BuildDriverInfoList(devInfoData, windows.SPDIT_COMPATDRIVER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devInfo.DestroyDriverInfoList(devInfoData, windows.SPDIT_COMPATDRIVER)
+	for i := 0; ; i++ {
+		drvInfoData, err := devInfo.EnumDriverInfo(devInfoData, windows.SPDIT_COMPATDRIVER, i)
+		if err != nil {
+			if err == windows.ERROR_NO_MORE_ITEMS {
+				break
+			}
+			continue
+		}
+		drvInfoDetailData, err := devInfo.DriverInfoDetail(devInfoData, drvInfoData)
+		if err != nil {
+			t.Error(err)
+			continue
+		}
+		t.Logf("%s - %s", drvInfoData.Description(), drvInfoDetailData.InfFileName())
+	}
+}
+
+func TestProcThreadAttributeHandleList(t *testing.T) {
+	const sentinel = "the gopher dance"
+	system32, err := windows.GetSystemDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable16, err := windows.UTF16PtrFromString(filepath.Join(system32, "cmd.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args16, err := windows.UTF16PtrFromString(windows.ComposeCommandLine([]string{"/c", "echo " + sentinel}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributeList, err := windows.NewProcThreadAttributeList(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attributeList.Delete()
+	si := &windows.StartupInfoEx{
+		StartupInfo:             windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{}))},
+		ProcThreadAttributeList: attributeList.List(),
+	}
+	pipeR, pipeW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pipeR.Close()
+	defer pipeW.Close()
+	func() {
+		// We allocate handles in a closure to provoke a UaF in the case of attributeList.Update being buggy.
+		handles := []windows.Handle{windows.Handle(pipeW.Fd())}
+		attributeList.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0]))
+		si.Flags |= windows.STARTF_USESTDHANDLES
+		si.StdOutput = handles[0]
+		// Go 1.16's pipe handles aren't inheritable, so mark it explicitly as such here.
+		windows.SetHandleInformation(handles[0], windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT)
+	}()
+	pi := new(windows.ProcessInformation)
+	err = windows.CreateProcess(executable16, args16, nil, nil, true, windows.CREATE_DEFAULT_ERROR_MODE|windows.CREATE_UNICODE_ENVIRONMENT|windows.EXTENDED_STARTUPINFO_PRESENT, nil, nil, &si.StartupInfo, pi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(pi.Thread)
+	defer windows.CloseHandle(pi.Process)
+	pipeR.SetReadDeadline(time.Now().Add(time.Minute))
+	out, _, err := bufio.NewReader(pipeR).ReadLine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != sentinel {
+		t.Fatalf("got %q; want %q", out, sentinel)
+	}
+}
+
+func TestWSALookupService(t *testing.T) {
+	var flags uint32 = windows.LUP_CONTAINERS
+	flags |= windows.LUP_RETURN_NAME
+	flags |= windows.LUP_RETURN_ADDR
+
+	var querySet windows.WSAQUERYSET
+	querySet.NameSpace = windows.NS_BTH
+	querySet.Size = uint32(unsafe.Sizeof(windows.WSAQUERYSET{}))
+
+	var handle windows.Handle
+	err := windows.WSALookupServiceBegin(&querySet, flags, &handle)
+	if err != nil {
+		if errors.Is(err, windows.WSASERVICE_NOT_FOUND) {
+			t.Skip("WSA Service not found, so skip this test")
+		}
+		t.Fatal(err)
+	}
+
+	defer windows.WSALookupServiceEnd(handle)
+
+	n := int32(unsafe.Sizeof(windows.WSAQUERYSET{}))
+	buf := make([]byte, n)
+items_loop:
+	for {
+		q := (*windows.WSAQUERYSET)(unsafe.Pointer(&buf[0]))
+		err := windows.WSALookupServiceNext(handle, flags, &n, q)
+		switch err {
+		case windows.WSA_E_NO_MORE, windows.WSAENOMORE:
+			// no more data available - break the loop
+			break items_loop
+		case windows.WSAEFAULT:
+			// buffer is too small - reallocate and try again
+			buf = make([]byte, n)
+		case nil:
+			// found a record - display the item and fetch next item
+			var addr string
+			for _, e := range q.SaBuffer.RemoteAddr.Sockaddr.Addr.Data {
+				if e != 0 {
+					addr += fmt.Sprintf("%x", e)
+				}
+			}
+			t.Logf("%s -> %s\n", windows.UTF16PtrToString(q.ServiceInstanceName), addr)
+
+		default:
+			t.Fatal(err)
+		}
+	}
 }

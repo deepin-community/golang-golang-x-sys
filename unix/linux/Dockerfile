@@ -15,15 +15,15 @@ RUN apt-get update && apt-get install -y  --no-install-recommends \
 # Get the git sources. If not cached, this takes O(5 minutes).
 WORKDIR /git
 RUN git config --global advice.detachedHead false
-# Linux Kernel: Released 25 Apr 2021
-RUN git clone --branch v5.12 --depth 1 https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux
-# GNU C library: Released 01 Feb 2021 (we should try to get a secure way to clone this)
-RUN git clone --branch release/2.33/master --depth 1 git://sourceware.org/git/glibc.git
+# Linux Kernel: Released 19 Feb 2023
+RUN git clone --branch v6.2 --depth 1 https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux
+# GNU C library: Released 1 Feb 2022
+RUN git clone --branch release/2.37/master --depth 1 https://sourceware.org/git/glibc.git
 
 # Get Go
-ENV GOLANG_VERSION 1.17beta1
+ENV GOLANG_VERSION 1.20.1
 ENV GOLANG_DOWNLOAD_URL https://golang.org/dl/go$GOLANG_VERSION.linux-amd64.tar.gz
-ENV GOLANG_DOWNLOAD_SHA256 a479681705b65971f9db079bfce53c4393bfa241d952eb09de88fb40677d3c4c
+ENV GOLANG_DOWNLOAD_SHA256 000a5b1fca4f75895f78befeb2eecf10bfff3c428597f3f1e69133b63b911b02
 
 RUN curl -fsSL "$GOLANG_DOWNLOAD_URL" -o golang.tar.gz \
     && echo "$GOLANG_DOWNLOAD_SHA256  golang.tar.gz" | sha256sum -c - \
@@ -51,7 +51,22 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Only for loong64, getting tools of qemu-user and gcc-cross-compiler
+ENV LOONG64_BASE_URL https://github.com/loongson/build-tools/releases/download/2022.09.06
+ENV LOONG64_GCC  loongarch64-clfs-6.3-cross-tools-gcc-glibc.tar.xz
+ENV LOONG64_QEMU qemu-loongarch64
+ENV LOONG64_GCC_DOWNLOAD_URL  $LOONG64_BASE_URL/$LOONG64_GCC
+ENV LOONG64_QEMU_DOWNLOAD_URL $LOONG64_BASE_URL/$LOONG64_QEMU
+
+RUN apt-get update && apt-get install xz-utils -y && mkdir /loong64 && cd /loong64 \
+    && curl -fsSL "$LOONG64_QEMU_DOWNLOAD_URL" -o /usr/bin/"$LOONG64_QEMU" \
+    && chmod +x /usr/bin/"$LOONG64_QEMU" \
+    && curl -fsSL "$LOONG64_GCC_DOWNLOAD_URL" -o "$LOONG64_GCC" \
+    && tar xf "$LOONG64_GCC" -C /usr/local/ \
+    && ln -s /usr/local/cross-tools/bin/loongarch64-unknown-linux-gnu-gcc /usr/bin/loongarch64-linux-gnu-gcc \
+    && rm -rf /loong64
+
 # Let the scripts know they are in the docker environment
 ENV GOLANG_SYS_BUILD docker
-WORKDIR /build
+WORKDIR /build/unix
 ENTRYPOINT ["go", "run", "linux/mkall.go", "/git/linux", "/git/glibc"]
