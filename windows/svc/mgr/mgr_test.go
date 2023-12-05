@@ -209,6 +209,57 @@ func testRecoveryCommand(t *testing.T, s *mgr.Service, should string) {
 	}
 }
 
+func testRecoveryActionsOnNonCrashFailures(t *testing.T, s *mgr.Service, should bool) {
+	err := s.SetRecoveryActionsOnNonCrashFailures(should)
+	if err != nil {
+		t.Fatalf("SetRecoveryActionsOnNonCrashFailures failed: %v", err)
+	}
+	is, err := s.RecoveryActionsOnNonCrashFailures()
+	if err != nil {
+		t.Fatalf("RecoveryActionsOnNonCrashFailures failed: %v", err)
+	}
+	if should != is {
+		t.Errorf("RecoveryActionsOnNonCrashFailures mismatch: flag is %v, but should have %v", is, should)
+	}
+}
+
+func testMultipleRecoverySettings(t *testing.T, s *mgr.Service, rebootMsgShould, recoveryCmdShould string, actionsFlagShould bool) {
+	err := s.SetRebootMessage(rebootMsgShould)
+	if err != nil {
+		t.Fatalf("SetRebootMessage failed: %v", err)
+	}
+	err = s.SetRecoveryActionsOnNonCrashFailures(actionsFlagShould)
+	if err != nil {
+		t.Fatalf("SetRecoveryActionsOnNonCrashFailures failed: %v", err)
+	}
+	err = s.SetRecoveryCommand(recoveryCmdShould)
+	if err != nil {
+		t.Fatalf("SetRecoveryCommand failed: %v", err)
+	}
+
+	rebootMsgIs, err := s.RebootMessage()
+	if err != nil {
+		t.Fatalf("RebootMessage failed: %v", err)
+	}
+	if rebootMsgShould != rebootMsgIs {
+		t.Errorf("reboot message mismatch: message is %q, but should have %q", rebootMsgIs, rebootMsgShould)
+	}
+	recoveryCommandIs, err := s.RecoveryCommand()
+	if err != nil {
+		t.Fatalf("RecoveryCommand failed: %v", err)
+	}
+	if recoveryCmdShould != recoveryCommandIs {
+		t.Errorf("recovery command mismatch: command is %q, but should have %q", recoveryCommandIs, recoveryCmdShould)
+	}
+	actionsFlagIs, err := s.RecoveryActionsOnNonCrashFailures()
+	if err != nil {
+		t.Fatalf("RecoveryActionsOnNonCrashFailures failed: %v", err)
+	}
+	if actionsFlagShould != actionsFlagIs {
+		t.Errorf("RecoveryActionsOnNonCrashFailures mismatch: flag is %v, but should have %v", actionsFlagIs, actionsFlagShould)
+	}
+}
+
 func testControl(t *testing.T, s *mgr.Service, c svc.Cmd, expectedErr error, expectedStatus svc.Status) {
 	status, err := s.Control(c)
 	if err != expectedErr {
@@ -227,25 +278,26 @@ func remove(t *testing.T, s *mgr.Service) {
 }
 
 func TestMyService(t *testing.T) {
+	if os.Getenv("GO_BUILDER_NAME") == "" {
+		// Don't install services on arbitrary users' machines.
+		t.Skip("skipping test that modifies system services: GO_BUILDER_NAME not set")
+	}
 	if testing.Short() {
-		t.Skip("skipping test in short mode - it modifies system services")
+		t.Skip("skipping test in short mode that modifies system services")
 	}
 
-	const name = "mymgrservice"
+	const name = "mgrtestservice"
 
 	m, err := mgr.Connect()
 	if err != nil {
-		if errno, ok := err.(syscall.Errno); ok && errno == syscall.ERROR_ACCESS_DENIED {
-			t.Skip("Skipping test: we don't have rights to manage services.")
-		}
 		t.Fatalf("SCM connection failed: %s", err)
 	}
 	defer m.Disconnect()
 
 	c := mgr.Config{
 		StartType:    mgr.StartDisabled,
-		DisplayName:  "my service",
-		Description:  "my service is just a test",
+		DisplayName:  "x-sys mgr test service",
+		Description:  "x-sys mgr test service is just a test",
 		Dependencies: []string{"LanmanServer", "W32Time"},
 	}
 
@@ -288,14 +340,14 @@ func TestMyService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListServices failed: %v", err)
 	}
-	var myserviceIsInstalled bool
+	var serviceIsInstalled bool
 	for _, sn := range svcnames {
 		if sn == name {
-			myserviceIsInstalled = true
+			serviceIsInstalled = true
 			break
 		}
 	}
-	if !myserviceIsInstalled {
+	if !serviceIsInstalled {
 		t.Errorf("ListServices failed to find %q service", name)
 	}
 
@@ -304,6 +356,9 @@ func TestMyService(t *testing.T) {
 	testRebootMessage(t, s, "") // delete reboot message
 	testRecoveryCommand(t, s, fmt.Sprintf("sc query %s", name))
 	testRecoveryCommand(t, s, "") // delete recovery command
+	testRecoveryActionsOnNonCrashFailures(t, s, true)
+	testRecoveryActionsOnNonCrashFailures(t, s, false)
+	testMultipleRecoverySettings(t, s, fmt.Sprintf("%s failed", name), fmt.Sprintf("sc query %s", name), true)
 
 	expectedStatus := svc.Status{
 		State: svc.Stopped,
