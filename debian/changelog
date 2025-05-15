@@ -1,3 +1,9 @@
+golang-golang-x-sys (0.20.0-1deepin1) unstable; urgency=medium
+
+  * feat: add sw64 support
+
+ -- Deepin Packages Builder <packages@deepin.org>  Thu, 15 May 2025 15:43:02 +0800
+
 golang-golang-x-sys (0.20.0-1) unstable; urgency=medium
 
   * New upstream version 0.20.0
