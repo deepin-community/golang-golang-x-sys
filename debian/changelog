@@ -1,8 +1,21 @@
-golang-golang-x-sys (0.20.0-1deepin1) unstable; urgency=medium
+golang-golang-x-sys (0.22.0-1deepin1) unstable; urgency=medium
 
+  [ hudeng ]
   * feat: add sw64 support
 
- -- Deepin Packages Builder <packages@deepin.org>  Thu, 15 May 2025 15:43:02 +0800
+ -- Tianyu Chen <sweetyfish@deepin.org>  Tue, 09 Sep 2025 14:51:10 +0800
+
+golang-golang-x-sys (0.22.0-1) unstable; urgency=medium
+
+  * New upstream version 0.22.0
+
+ -- Anthony Fok <foka@debian.org>  Sun, 01 Sep 2024 08:33:38 -0600
+
+golang-golang-x-sys (0.21.0-1) unstable; urgency=medium
+
+  * New upstream version 0.21.0
+
+ -- Anthony Fok <foka@debian.org>  Wed, 31 Jul 2024 09:30:00 -0600
 
 golang-golang-x-sys (0.20.0-1) unstable; urgency=medium
 

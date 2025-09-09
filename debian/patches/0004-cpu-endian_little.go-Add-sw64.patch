@@ -1,0 +1,21 @@
+From: Tianyu Chen <sweetyfish@deepin.org>
+Date: Tue, 9 Sep 2025 15:05:36 +0800
+Subject: cpu/endian_little.go: Add sw64
+
+---
+ cpu/endian_little.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cpu/endian_little.go b/cpu/endian_little.go
+index 48eccc4..b0abffe 100644
+--- a/cpu/endian_little.go
++++ b/cpu/endian_little.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build 386 || amd64 || amd64p32 || alpha || arm || arm64 || loong64 || mipsle || mips64le || mips64p32le || nios2 || ppc64le || riscv || riscv64 || sh || wasm
++//go:build 386 || amd64 || amd64p32 || alpha || arm || arm64 || loong64 || mipsle || mips64le || mips64p32le || nios2 || ppc64le || riscv || riscv64 || sh || sw64 || wasm
+ 
+ package cpu
+ 
