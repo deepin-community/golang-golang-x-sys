@@ -1,3 +1,2 @@
 02-allow-dev-random-minor-minor-mismatch-in-TestDevices.patch
 03-skip-TestOpenByHandleAt-if-openMountByID-fails.patch
-0001-feat-add-sunway-support.patch
