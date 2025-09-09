@@ -11,9 +11,8 @@ Subject: feat: add sunway support
  unix/endian_little.go       |    2 +-
  unix/linux-sw64/mkall.go    | 1017 +++++++
  unix/linux-sw64/types.go    | 5919 ++++++++++++++++++++++++++++++++++++++
- unix/linux/mkall.go         |   38 +-
+ unix/linux/mkall.go         |   16 +-
  unix/linux/mksysnum.go      |    2 +-
- unix/linux/types.go         |   34 +-
  unix/mkall.sh               |   17 +-
  unix/mkerrors.sh            |    6 +-
  unix/mkpost.go              |    2 +-
@@ -26,7 +25,7 @@ Subject: feat: add sunway support
  unix/zsysnum_linux_sw64.go  |  385 +++
  unix/ztypes_linux.go        |    2 +-
  unix/ztypes_linux_sw64.go   | 6623 +++++++++++++++++++++++++++++++++++++++++++
- 23 files changed, 21586 insertions(+), 37 deletions(-)
+ 22 files changed, 21549 insertions(+), 18 deletions(-)
  create mode 100644 cpu/cpu_linux_sw64.go
  create mode 100644 cpu/cpu_sw64.go
  create mode 100644 unix/asm_linux_sw64.s
@@ -7124,7 +7123,7 @@ index 0000000..65f14fa
 +type Cachestat_t C.struct_cachestat
 +type CachestatRange C.struct_cachestat_range
 diff --git a/unix/linux/mkall.go b/unix/linux/mkall.go
-index ae15914..f0f624d 100644
+index ae15914..dff3c06 100644
 --- a/unix/linux/mkall.go
 +++ b/unix/linux/mkall.go
 @@ -39,7 +39,7 @@ var GlibcDir string
@@ -7136,27 +7135,16 @@ index ae15914..f0f624d 100644
  const MinKernel = "2.6.23" // https://golang.org/doc/install#requirements
  
  type target struct {
-@@ -58,7 +58,7 @@ type target struct {
- // not fully supported, but there is enough support already to generate Go type
- // and error definitions.
- var targets = []target{
--	{
-+	/*{
- 		GoArch:    "386",
- 		LinuxArch: "x86",
- 		GNUArch:   "i686-linux-gnu", // Note "i686" not "i386"
-@@ -155,7 +155,13 @@ var targets = []target{
- 		GNUArch:   "sparc64-linux-gnu",
+@@ -156,6 +156,12 @@ var targets = []target{
  		BigEndian: true,
  		Bits:      64,
--	},
-+	},*/
-+        {
-+                GoArch:    "sw64",
-+                LinuxArch: "sw_64",
-+                GNUArch:   "sw_64-linux-gnu",
-+                Bits:      64,
-+        },
+ 	},
++	{
++		GoArch:    "sw64",
++		LinuxArch: "sw_64",
++		GNUArch:   "sw_64-linux-gnu",
++		Bits:      64,
++	},
  }
  
  // ptracePairs is a list of pairs of targets that can, in some cases,
@@ -7186,59 +7174,7 @@ index ae15914..f0f624d 100644
  			cmd.Env[i] = "GOARCH=" + BuildArch
  		}
  	}
-@@ -296,10 +302,13 @@ func (t *target) commandFormatOutput(formatter string, outputFile string,
- 		t.setTargetBuildArch(mainCmd)
- 	}
- 
-+	fmt.Printf("mainCmd: %v, env: %v \n",mainCmd, t.env)
- 	fmtCmd := t.makeCommand(formatter)
-+	fmt.Printf("fmtCmd: %v \n",fmtCmd)
- 	if formatter == "mkpost" {
- 		fmtCmd = t.makeCommand("go", "run", "mkpost.go")
- 		t.setTargetBuildArch(fmtCmd)
-+		fmt.Printf("mkpost fmtCmd: %v, env: %v \n",fmtCmd, t.env)
- 	} else if formatter == "gofmt2" {
- 		fmtCmd = t.makeCommand("gofmt")
- 		mainCmd.Dir = filepath.Join(TempDir, t.GoArch, "mkerrors")
-@@ -312,23 +321,37 @@ func (t *target) commandFormatOutput(formatter string, outputFile string,
- 
- 	// mainCmd | fmtCmd > outputFile
- 	if fmtCmd.Stdin, err = mainCmd.StdoutPipe(); err != nil {
-+		fmt.Println("mainCmd | fmtCmd error\n")
- 		return
- 	}
- 	if fmtCmd.Stdout, err = os.Create(outputFile); err != nil {
-+		fmt.Printf("fmt create outputfile failed: %v", err)
- 		return
- 	}
- 
- 	// Make sure the formatter eventually closes
- 	if err = fmtCmd.Start(); err != nil {
-+		fmt.Println("fmtCmd start error\n")
- 		return
- 	}
- 	defer func() {
- 		fmtErr := fmtCmd.Wait()
-+		fmt.Printf("fmtErr: %v\n", fmtErr) 
- 		if err == nil {
- 			err = fmtErr
- 		}
- 	}()
- 
-+	/*var stdout bytes.Buffer
-+	var stderr bytes.Buffer
-+	mainCmd.Stdout = &stdout
-+	mainCmd.Stderr = &stderr
-+
-+	err = mainCmd.Run()
-+	fmt.Println("Standard Output:")
-+	fmt.Println(stdout.String())
-+	fmt.Println("Standard Error:")
-+	fmt.Println(stderr.String())*/
- 	return mainCmd.Run()
- }
- 
-@@ -338,7 +361,7 @@ func (t *target) setupEnvironment() error {
+@@ -338,7 +344,7 @@ func (t *target) setupEnvironment() error {
  	t.env = append(t.env, fmt.Sprintf("%s=%s", "GOARCH", t.GoArch))
  
  	// Get appropriate compiler and emulator (unless on x86)
@@ -7247,14 +7183,6 @@ index ae15914..f0f624d 100644
  		// Check/Setup cross compiler
  		t.compiler = t.GNUArch + "-gcc"
  		if _, err := exec.LookPath(t.compiler); err != nil {
-@@ -358,6 +381,7 @@ func (t *target) setupEnvironment() error {
- 		t.env = append(t.env, fmt.Sprintf("%s=%s", "GORUN", "qemu-"+qemuArchName))
- 	} else {
- 		t.compiler = "gcc"
-+		fmt.Println("use gcc\n")
- 		t.env = append(t.env, fmt.Sprintf("%s=%s", "CC", "gcc"))
- 	}
- 	return nil
 diff --git a/unix/linux/mksysnum.go b/unix/linux/mksysnum.go
 index be42532..1e22c7b 100644
 --- a/unix/linux/mksysnum.go
@@ -7268,79 +7196,6 @@ index be42532..1e22c7b 100644
  		fmt.Fprintf(os.Stderr, "In the new build system, mksysnum should not be called directly.\n")
  		fmt.Fprintf(os.Stderr, "See README.md\n")
  		os.Exit(1)
-diff --git a/unix/linux/types.go b/unix/linux/types.go
-index a6f44f4..20abd6f 100644
---- a/unix/linux/types.go
-+++ b/unix/linux/types.go
-@@ -1273,7 +1273,7 @@ const (
- 	PERF_SAMPLE_BRANCH_TYPE_SAVE_SHIFT    = C.PERF_SAMPLE_BRANCH_TYPE_SAVE_SHIFT
- 	PERF_SAMPLE_BRANCH_HW_INDEX_SHIFT     = C.PERF_SAMPLE_BRANCH_HW_INDEX_SHIFT
- 	PERF_SAMPLE_BRANCH_PRIV_SAVE_SHIFT    = C.PERF_SAMPLE_BRANCH_PRIV_SAVE_SHIFT
--	PERF_SAMPLE_BRANCH_COUNTERS           = C.PERF_SAMPLE_BRANCH_COUNTERS
-+	//PERF_SAMPLE_BRANCH_COUNTERS           = C.PERF_SAMPLE_BRANCH_COUNTERS
- 	PERF_SAMPLE_BRANCH_MAX_SHIFT          = C.PERF_SAMPLE_BRANCH_MAX_SHIFT
- 	PERF_SAMPLE_BRANCH_USER               = C.PERF_SAMPLE_BRANCH_USER
- 	PERF_SAMPLE_BRANCH_KERNEL             = C.PERF_SAMPLE_BRANCH_KERNEL
-@@ -1584,7 +1584,7 @@ const (
- 	IFLA_DEVLINK_PORT                          = C.IFLA_DEVLINK_PORT
- 	IFLA_GSO_IPV4_MAX_SIZE                     = C.IFLA_GSO_IPV4_MAX_SIZE
- 	IFLA_GRO_IPV4_MAX_SIZE                     = C.IFLA_GRO_IPV4_MAX_SIZE
--	IFLA_DPLL_PIN                              = C.IFLA_DPLL_PIN
-+	//IFLA_DPLL_PIN                              = C.IFLA_DPLL_PIN
- 	IFLA_PROTO_DOWN_REASON_UNSPEC              = C.IFLA_PROTO_DOWN_REASON_UNSPEC
- 	IFLA_PROTO_DOWN_REASON_MASK                = C.IFLA_PROTO_DOWN_REASON_MASK
- 	IFLA_PROTO_DOWN_REASON_VALUE               = C.IFLA_PROTO_DOWN_REASON_VALUE
-@@ -1649,8 +1649,8 @@ const (
- 	IFLA_BR_VLAN_STATS_PER_PORT                = C.IFLA_BR_VLAN_STATS_PER_PORT
- 	IFLA_BR_MULTI_BOOLOPT                      = C.IFLA_BR_MULTI_BOOLOPT
- 	IFLA_BR_MCAST_QUERIER_STATE                = C.IFLA_BR_MCAST_QUERIER_STATE
--	IFLA_BR_FDB_N_LEARNED                      = C.IFLA_BR_FDB_N_LEARNED
--	IFLA_BR_FDB_MAX_LEARNED                    = C.IFLA_BR_FDB_MAX_LEARNED
-+	//IFLA_BR_FDB_N_LEARNED                      = C.IFLA_BR_FDB_N_LEARNED
-+	//IFLA_BR_FDB_MAX_LEARNED                    = C.IFLA_BR_FDB_MAX_LEARNED
- 	IFLA_BRPORT_UNSPEC                         = C.IFLA_BRPORT_UNSPEC
- 	IFLA_BRPORT_STATE                          = C.IFLA_BRPORT_STATE
- 	IFLA_BRPORT_PRIORITY                       = C.IFLA_BRPORT_PRIORITY
-@@ -1747,18 +1747,18 @@ const (
- 	IFLA_IPVLAN_UNSPEC                         = C.IFLA_IPVLAN_UNSPEC
- 	IFLA_IPVLAN_MODE                           = C.IFLA_IPVLAN_MODE
- 	IFLA_IPVLAN_FLAGS                          = C.IFLA_IPVLAN_FLAGS
--	NETKIT_NEXT                                = C.NETKIT_NEXT
--	NETKIT_PASS                                = C.NETKIT_PASS
--	NETKIT_DROP                                = C.NETKIT_DROP
--	NETKIT_REDIRECT                            = C.NETKIT_REDIRECT
--	NETKIT_L2                                  = C.NETKIT_L2
--	NETKIT_L3                                  = C.NETKIT_L3
--	IFLA_NETKIT_UNSPEC                         = C.IFLA_NETKIT_UNSPEC
--	IFLA_NETKIT_PEER_INFO                      = C.IFLA_NETKIT_PEER_INFO
--	IFLA_NETKIT_PRIMARY                        = C.IFLA_NETKIT_PRIMARY
--	IFLA_NETKIT_POLICY                         = C.IFLA_NETKIT_POLICY
--	IFLA_NETKIT_PEER_POLICY                    = C.IFLA_NETKIT_PEER_POLICY
--	IFLA_NETKIT_MODE                           = C.IFLA_NETKIT_MODE
-+	//NETKIT_NEXT                                = C.NETKIT_NEXT
-+	//NETKIT_PASS                                = C.NETKIT_PASS
-+	//NETKIT_DROP                                = C.NETKIT_DROP
-+	//NETKIT_REDIRECT                            = C.NETKIT_REDIRECT
-+	//NETKIT_L2                                  = C.NETKIT_L2
-+	//NETKIT_L3                                  = C.NETKIT_L3
-+	//IFLA_NETKIT_UNSPEC                         = C.IFLA_NETKIT_UNSPEC
-+	//IFLA_NETKIT_PEER_INFO                      = C.IFLA_NETKIT_PEER_INFO
-+	//IFLA_NETKIT_PRIMARY                        = C.IFLA_NETKIT_PRIMARY
-+	//IFLA_NETKIT_POLICY                         = C.IFLA_NETKIT_POLICY
-+	//IFLA_NETKIT_PEER_POLICY                    = C.IFLA_NETKIT_PEER_POLICY
-+	//IFLA_NETKIT_MODE                           = C.IFLA_NETKIT_MODE
- 	IFLA_VXLAN_UNSPEC                          = C.IFLA_VXLAN_UNSPEC
- 	IFLA_VXLAN_ID                              = C.IFLA_VXLAN_ID
- 	IFLA_VXLAN_GROUP                           = C.IFLA_VXLAN_GROUP
-@@ -1968,7 +1968,7 @@ const (
- 	IFLA_MCTP_UNSPEC                           = C.IFLA_MCTP_UNSPEC
- 	IFLA_MCTP_NET                              = C.IFLA_MCTP_NET
- 	IFLA_DSA_UNSPEC                            = C.IFLA_DSA_UNSPEC
--	IFLA_DSA_CONDUIT                           = C.IFLA_DSA_CONDUIT
-+	//IFLA_DSA_CONDUIT                           = C.IFLA_DSA_CONDUIT
- 	IFLA_DSA_MASTER                            = C.IFLA_DSA_MASTER
- )
- 
 diff --git a/unix/mkall.sh b/unix/mkall.sh
 index e6f31d3..10c3840 100755
 --- a/unix/mkall.sh
